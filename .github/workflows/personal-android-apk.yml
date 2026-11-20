@@ -1,0 +1,64 @@
+name: Personal Android APK
+
+on:
+  push:
+    branches: [android/two-row-composer]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    if: github.repository == 'trasta298/t3code' && github.ref == 'refs/heads/android/two-row-composer'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: personal-android
+    env:
+      APP_VARIANT: preview
+      T3CODE_MOBILE_UPDATES_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: package.json
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Install mobile dependencies
+        run: |
+          npm install -g "$(node -p 'require("./package.json").packageManager')"
+          pnpm install --frozen-lockfile --filter '@t3tools/mobile...'
+      - name: Build standalone ARM64 APK
+        env:
+          NODE_ENV: production
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'build-tools;37.0.0'
+          pnpm --filter @t3tools/mobile exec expo prebuild --platform android --no-install
+          cd apps/mobile/android
+          ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --max-workers=2 --no-daemon
+      - name: Sign and verify the APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          umask 077
+          keystore="$RUNNER_TEMP/personal.p12"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          signer="$ANDROID_HOME/build-tools/37.0.0/apksigner"
+          apk="T3-Code-Preview-arm64.apk"
+          "$signer" sign --ks "$keystore" --ks-pass env:KEYSTORE_PASSWORD --out "$apk" apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          "$signer" verify --verbose --print-certs "$apk"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: T3-Code-Preview-arm64.apk
+          archive: false
+          if-no-files-found: error
